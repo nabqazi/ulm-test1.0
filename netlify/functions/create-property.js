@@ -1,15 +1,19 @@
 const { createProperty, validateProperty } = require('./data/properties');
+const { 
+  getSecurityHeaders, 
+  checkRateLimit, 
+  sanitizeError, 
+  safeJsonParse,
+  sanitizeString
+} = require('./utils/security');
 
-// Helper function to get CORS headers
-const getCorsHeaders = () => ({
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Content-Type': 'application/json'
-});
+// Helper function to get client identifier for rate limiting
+const getClientId = (event) => {
+  return event.headers['x-forwarded-for'] || event.headers['client-ip'] || 'unknown';
+};
 
 exports.handler = async (event, context) => {
-  const headers = getCorsHeaders();
+  const headers = getSecurityHeaders();
 
   // Handle preflight OPTIONS request
   if (event.httpMethod === 'OPTIONS') {
@@ -34,10 +38,14 @@ exports.handler = async (event, context) => {
   }
 
   try {
-    // Parse request body
+    // SECURITY FIX: Rate limiting  
+    const clientId = getClientId(event);
+    checkRateLimit(clientId, 10, 60000); // 10 property creation requests per minute
+
+    // SECURITY FIX: Safe JSON parsing with size limits
     let propertyData;
     try {
-      propertyData = JSON.parse(event.body || '{}');
+      propertyData = safeJsonParse(event.body);
     } catch (parseError) {
       return {
         statusCode: 400,
@@ -48,6 +56,17 @@ exports.handler = async (event, context) => {
           message: 'Invalid JSON in request body'
         })
       };
+    }
+
+    // SECURITY FIX: Sanitize string inputs
+    if (propertyData.title) {
+      propertyData.title = sanitizeString(propertyData.title, 200);
+    }
+    if (propertyData.description) {
+      propertyData.description = sanitizeString(propertyData.description, 2000);
+    }
+    if (propertyData.location) {
+      propertyData.location = sanitizeString(propertyData.location, 100);
     }
 
     // Validate property data
@@ -80,15 +99,13 @@ exports.handler = async (event, context) => {
     };
 
   } catch (error) {
-    console.error('Error in create-property:', error);
+    // SECURITY FIX: Sanitize error responses
+    const safeError = sanitizeError(error);
     return {
-      statusCode: 500,
+      statusCode: error.message === 'Rate limit exceeded' ? 429 : 
+                 error.message.includes('Invalid') || error.message.includes('exceeds') ? 400 : 500,
       headers,
-      body: JSON.stringify({
-        success: false,
-        error: 'Internal Server Error',
-        message: 'An unexpected error occurred'
-      })
+      body: JSON.stringify(safeError)
     };
   }
 };

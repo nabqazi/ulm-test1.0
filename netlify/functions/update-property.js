@@ -1,15 +1,20 @@
 const { updateProperty, validateProperty } = require('./data/properties');
+const { 
+  getSecurityHeaders, 
+  checkRateLimit, 
+  sanitizeError, 
+  validatePropertyId,
+  safeJsonParse,
+  sanitizeString
+} = require('./utils/security');
 
-// Helper function to get CORS headers
-const getCorsHeaders = () => ({
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Allow-Methods': 'PUT, OPTIONS',
-  'Content-Type': 'application/json'
-});
+// Helper function to get client identifier for rate limiting
+const getClientId = (event) => {
+  return event.headers['x-forwarded-for'] || event.headers['client-ip'] || 'unknown';
+};
 
 exports.handler = async (event, context) => {
-  const headers = getCorsHeaders();
+  const headers = getSecurityHeaders();
 
   // Handle preflight OPTIONS request
   if (event.httpMethod === 'OPTIONS') {
@@ -34,7 +39,11 @@ exports.handler = async (event, context) => {
   }
 
   try {
-    // Extract property ID from path parameters
+    // SECURITY FIX: Rate limiting
+    const clientId = getClientId(event);
+    checkRateLimit(clientId, 20, 60000); // 20 property updates per minute
+
+    // Extract property ID from path parameters with validation
     const pathSegments = event.path.split('/');
     const propertyId = pathSegments[pathSegments.length - 1];
 
@@ -50,10 +59,13 @@ exports.handler = async (event, context) => {
       };
     }
 
-    // Parse request body
+    // SECURITY FIX: Validate property ID format
+    validatePropertyId(propertyId);
+
+    // SECURITY FIX: Safe JSON parsing with size limits
     let updateData;
     try {
-      updateData = JSON.parse(event.body || '{}');
+      updateData = safeJsonParse(event.body);
     } catch (parseError) {
       return {
         statusCode: 400,
@@ -77,6 +89,17 @@ exports.handler = async (event, context) => {
           message: 'Update data cannot be empty'
         })
       };
+    }
+
+    // SECURITY FIX: Sanitize string inputs  
+    if (updateData.title) {
+      updateData.title = sanitizeString(updateData.title, 200);
+    }
+    if (updateData.description) {
+      updateData.description = sanitizeString(updateData.description, 2000);
+    }
+    if (updateData.location) {
+      updateData.location = sanitizeString(updateData.location, 100);
     }
 
     // Validate update data
@@ -121,15 +144,13 @@ exports.handler = async (event, context) => {
     };
 
   } catch (error) {
-    console.error('Error in update-property:', error);
+    // SECURITY FIX: Sanitize error responses
+    const safeError = sanitizeError(error);
     return {
-      statusCode: 500,
+      statusCode: error.message === 'Rate limit exceeded' ? 429 : 
+                 error.message.includes('Invalid') || error.message.includes('exceeds') ? 400 : 500,
       headers,
-      body: JSON.stringify({
-        success: false,
-        error: 'Internal Server Error',
-        message: 'An unexpected error occurred'
-      })
+      body: JSON.stringify(safeError)
     };
   }
 };

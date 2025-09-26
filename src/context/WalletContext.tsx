@@ -16,11 +16,16 @@ export function WalletProvider({
   const [address, setAddress] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const connectWallet = () => {
-    // Mock wallet connection
+    // Mock wallet connection - In production, use proper Web3 signature verification
     setIsConnected(true);
     setAddress('0x1234...5678');
-    // Check if admin (would be verified through proper authentication)
-    setIsAdmin(Math.random() > 0.8); // 20% chance of being admin for demo
+    // SECURITY FIX: Replace random admin assignment with proper role verification
+    // In production: verify admin role through smart contract or signed message
+    const adminAddresses = [
+      '0x1234...5678', // Add actual admin addresses here
+      '0xabcd...efgh'  // Multiple admins supported
+    ];
+    setIsAdmin(adminAddresses.includes('0x1234...5678'));
   };
   const disconnectWallet = () => {
     setIsConnected(false);
