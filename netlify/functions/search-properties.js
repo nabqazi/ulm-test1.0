@@ -1,4 +1,16 @@
 const { getProperties } = require('./data/properties');
+const { 
+  getSecurityHeaders, 
+  checkRateLimit, 
+  sanitizeError, 
+  sanitizeString,
+  validateNumber
+} = require('./utils/security');
+
+// Helper function to get client identifier for rate limiting
+const getClientId = (event) => {
+  return event.headers['x-forwarded-for'] || event.headers['client-ip'] || 'unknown';
+};
 
 // Helper function to validate and parse query parameters
 function parseQueryParams(queryStringParameters) {
@@ -8,15 +20,15 @@ function parseQueryParams(queryStringParameters) {
     return params;
   }
 
-  // Parse location (case-insensitive partial match)
+  // Parse location (case-insensitive partial match) with sanitization
   if (queryStringParameters.location) {
-    params.location = queryStringParameters.location.trim().toLowerCase();
+    params.location = sanitizeString(queryStringParameters.location.trim(), 100).toLowerCase();
   }
 
   // Parse status (exact match, case-insensitive)
   if (queryStringParameters.status) {
     const validStatuses = ['available', 'sold out', 'coming soon'];
-    const status = queryStringParameters.status.trim().toLowerCase();
+    const status = sanitizeString(queryStringParameters.status.trim(), 20).toLowerCase();
     if (validStatuses.includes(status)) {
       params.status = status;
     }
@@ -24,18 +36,14 @@ function parseQueryParams(queryStringParameters) {
 
   // Parse minPrice (must be a positive number)
   if (queryStringParameters.minPrice) {
-    const minPrice = parseFloat(queryStringParameters.minPrice);
-    if (!isNaN(minPrice) && minPrice >= 0) {
-      params.minPrice = minPrice;
-    }
+    const minPrice = validateNumber(queryStringParameters.minPrice, 0, 100000000);
+    params.minPrice = minPrice;
   }
 
   // Parse maxPrice (must be a positive number)
   if (queryStringParameters.maxPrice) {
-    const maxPrice = parseFloat(queryStringParameters.maxPrice);
-    if (!isNaN(maxPrice) && maxPrice >= 0) {
-      params.maxPrice = maxPrice;
-    }
+    const maxPrice = validateNumber(queryStringParameters.maxPrice, 0, 100000000);
+    params.maxPrice = maxPrice;
   }
 
   // Validate price range
@@ -77,13 +85,7 @@ function filterProperties(params) {
 
 // Main handler function
 exports.handler = async (event, context) => {
-  // Set CORS headers
-  const headers = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Content-Type': 'application/json'
-  };
+  const headers = getSecurityHeaders();
 
   // Handle preflight OPTIONS request
   if (event.httpMethod === 'OPTIONS') {
@@ -100,6 +102,7 @@ exports.handler = async (event, context) => {
       statusCode: 405,
       headers,
       body: JSON.stringify({
+        success: false,
         error: 'Method not allowed',
         message: 'Only GET requests are supported'
       })
@@ -107,6 +110,10 @@ exports.handler = async (event, context) => {
   }
 
   try {
+    // SECURITY FIX: Rate limiting
+    const clientId = getClientId(event);
+    checkRateLimit(clientId, 100, 60000); // 100 search requests per minute
+
     // Parse and validate query parameters
     const params = parseQueryParams(event.queryStringParameters);
     
@@ -128,15 +135,13 @@ exports.handler = async (event, context) => {
     };
 
   } catch (error) {
-    // Handle validation errors
+    // SECURITY FIX: Sanitize error responses
+    const safeError = sanitizeError(error);
     return {
-      statusCode: 400,
+      statusCode: error.message === 'Rate limit exceeded' ? 429 : 
+                 error.message.includes('minPrice') || error.message.includes('must be') ? 400 : 500,
       headers,
-      body: JSON.stringify({
-        success: false,
-        error: 'Bad Request',
-        message: error.message
-      })
+      body: JSON.stringify(safeError)
     };
   }
 };

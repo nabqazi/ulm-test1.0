@@ -135,9 +135,12 @@ let properties = [
   }
 ];
 
+const { generateSecureId } = require('../utils/security');
+
 // Helper functions for CRUD operations
 const generateId = () => {
-  return (properties.length + 1).toString();
+  // SECURITY FIX: Use secure UUID instead of predictable sequential IDs
+  return generateSecureId();
 };
 
 const findPropertyById = (id) => {
